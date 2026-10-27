@@ -1,29 +1,110 @@
-
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  Mic,
-  MicOff,
-  Search,
-  CheckCircle2,
-  AlertCircle,
-  Save,
-  RotateCcw,
-  Volume2,
-  Loader2,
+  Mic, MicOff, RotateCcw, Save,
+  Loader2, AlertCircle, CheckCircle2
 } from 'lucide-react';
 import api from '../api/client';
 
-const emptyForm = {
-  customer_id: '',
-  type: '',
+const blank = {
+  customer_name: '',
+  customer_id: null,
+  status: '',
+  candidates: [],
   amount: '',
-  description_gu: '',
-  description_en: '',
+  type: ''
 };
 
-const newKey = () => crypto.randomUUID();
+const amountWords = {
+  'એક': 1, 'બે': 2, 'ત્રણ': 3, 'ચાર': 4,
+  'પાંચ': 5, 'છ': 6, 'સાત': 7, 'આઠ': 8,
+  'નવ': 9, 'દસ': 10, 'અગિયાર': 11,
+  'બાર': 12, 'તેર': 13, 'ચૌદ': 14,
+  'પંદર': 15, 'સોળ': 16, 'સત્તર': 17,
+  'અઢાર': 18, 'ઓગણીસ': 19,
+  'વીસ': 20, 'ત્રીસ': 30, 'ચાલીસ': 40,
+  'પચાસ': 50, 'સાઠ': 60, 'સિત્તેર': 70,
+  'એંસી': 80, 'નેવું': 90,
+  'સો': 100, 'હજાર': 1000, 'લાખ': 100000,
+  zero: 0, one: 1, two: 2, three: 3,
+  four: 4, five: 5, six: 6, seven: 7,
+  eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, thirteen: 13,
+  fourteen: 14, fifteen: 15, sixteen: 16,
+  seventeen: 17, eighteen: 18, nineteen: 19,
+  twenty: 20, thirty: 30, forty: 40,
+  fifty: 50, sixty: 60, seventy: 70,
+  eighty: 80, ninety: 90,
+  hundred: 100, thousand: 1000,
+  lakh: 100000
+};
 
-function getError(error) {
+function amountFromSpeech(value) {
+  const text = String(value).toLowerCase()
+    .replace(/[૦૧૨૩૪૫૬૭૮૯]/g, digit =>
+      String('૦૧૨૩૪૫૬૭૮૯'.indexOf(digit))
+    )
+    .replace(/,/g, '')
+    .trim();
+
+  const numeric = text.match(/\d+(?:\.\d{1,2})?/);
+
+  if (numeric) {
+    const number = Number(numeric[0]);
+    return number > 0 ? number.toFixed(2) : '';
+  }
+
+  let total = 0;
+  let current = 0;
+  let found = false;
+
+  for (const word of text.split(/[\s-]+/)) {
+    if (!Object.prototype.hasOwnProperty.call(amountWords, word)) {
+      continue;
+    }
+
+    found = true;
+    const number = amountWords[word];
+
+    if (number === 100) {
+      current = (current || 1) * 100;
+    } else if (number >= 1000) {
+      total += (current || 1) * number;
+      current = 0;
+    } else {
+      current += number;
+    }
+  }
+
+  const amount = total + current;
+
+  return found && amount > 0
+    ? amount.toFixed(2)
+    : '';
+}
+
+function typeFromSpeech(value) {
+  const text = String(value).toLowerCase();
+
+  const debit = [
+    'બાકી', 'ઉધાર', 'લેવાના',
+    'due', 'debit', 'pending', 'gave'
+  ];
+
+  const credit = [
+    'આવી ગયા', 'આવ્યા', 'આવી ગયા છે',
+    'જમા', 'મળ્યા', 'મળી ગયા',
+    'ચૂકવ્યા', 'received', 'receive',
+    'credit', 'paid', 'payment'
+  ];
+
+  const isDebit = debit.some(word => text.includes(word));
+  const isCredit = credit.some(word => text.includes(word));
+
+  if (isDebit === isCredit) return '';
+  return isDebit ? 'debit' : 'credit';
+}
+
+function apiError(error) {
   const errors = error.response?.data?.errors;
 
   if (errors) {
@@ -31,411 +112,269 @@ function getError(error) {
     if (first) return String(first);
   }
 
-  return (
-    error.response?.data?.message ||
-    error.message ||
-    'Something went wrong.'
-  );
+  return error.response?.data?.message ||
+    error.message || 'Something went wrong.';
 }
 
-function normalizeAmount(value) {
-  const text = String(value).trim();
-
-  if (!/^\d{1,13}(\.\d{1,2})?$/.test(text)) {
-    return null;
-  }
-
-  const [whole, decimal = ''] = text.split('.');
-
-  const rupees = whole.replace(/^0+(?=\d)/, '');
-  const paise = decimal.padEnd(2, '0');
-
-  if (rupees === '0' && paise === '00') {
-    return null;
-  }
-
-  return `${rupees}.${paise}`;
-}
-
-function customerLabel(customer, gu) {
-  if (!customer) return '';
-
-  const name = gu
+function displayName(customer, gu) {
+  return gu
     ? customer.name_gu || customer.name_en
     : customer.name_en || customer.name_gu;
-
-  return customer.phone
-    ? `${name} - ${customer.phone}`
-    : name;
 }
 
 export default function VoiceEntryPage({ language = 'gu' }) {
   const gu = language === 'gu';
+  const microphone = useRef(null);
+  const requestNumber = useRef(0);
+  const savingRef = useRef(false);
 
-  const recognitionRef = useRef(null);
-  const requestIdRef = useRef(0);
-  const customersRef = useRef([]);
-
-  const [speechLanguage, setSpeechLanguage] = useState(
-    language === 'gu' ? 'gu-IN' : 'en-IN'
+  const [voiceLanguage, setVoiceLanguage] = useState(
+    gu ? 'gu-IN' : 'en-IN'
   );
 
-  const [supported, setSupported] = useState(true);
+  const [step, setStep] = useState(1);
+  const [form, setForm] = useState({ ...blank });
+  const [spokenText, setSpokenText] = useState('');
   const [listening, setListening] = useState(false);
-  const [parsing, setParsing] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-
-  const [transcript, setTranscript] = useState('');
-  const [form, setForm] = useState({ ...emptyForm });
-  const [requestKey, setRequestKey] = useState(newKey);
-
-  const [customers, setCustomers] = useState([]);
-  const [customerMatches, setCustomerMatches] = useState([]);
-  const [customerSearch, setCustomerSearch] = useState('');
-  const [customerLoading, setCustomerLoading] = useState(false);
-
-  const [warnings, setWarnings] = useState([]);
+  const [confirm, setConfirm] = useState(false);
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [success, setSuccess] = useState('');
+  const [requestKey, setRequestKey] = useState(
+    () => crypto.randomUUID()
+  );
 
-  const updateField = (field, value) => {
-    setForm((previous) => ({
-      ...previous,
-      [field]: value,
-    }));
-
-    setRequestKey(newKey());
-    setMessage('');
-  };
-
-  const loadCustomers = useCallback(async (search = '') => {
-    setCustomerLoading(true);
-
-    try {
-      const response = await api.get('/api/v1/customers', {
-        params: {
-          search,
-          per_page: 100,
-        },
-      });
-
-      const payload = response.data?.data;
-      const list = Array.isArray(payload)
-        ? payload
-        : payload?.data || [];
-
-      setCustomers(list);
-      customersRef.current = list;
-    } catch (err) {
-      setError(getError(err));
-    } finally {
-      setCustomerLoading(false);
-    }
-  }, []);
+  const SpeechRecognition =
+    typeof window !== 'undefined'
+      ? window.SpeechRecognition || window.webkitSpeechRecognition
+      : null;
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      loadCustomers(customerSearch);
-    }, 300);
-
-    return () => clearTimeout(timer);
-  }, [customerSearch, loadCustomers]);
+    setVoiceLanguage(gu ? 'gu-IN' : 'en-IN');
+  }, [gu]);
 
   useEffect(() => {
-    const SpeechRecognition =
-      window.SpeechRecognition ||
-      window.webkitSpeechRecognition;
-
-    setSupported(Boolean(SpeechRecognition));
-
     return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.abort();
-        recognitionRef.current = null;
-      }
-
-      requestIdRef.current += 1;
+      requestNumber.current += 1;
+      microphone.current?.abort();
     };
   }, []);
 
-  useEffect(() => {
-    setSpeechLanguage(
-      language === 'gu' ? 'gu-IN' : 'en-IN'
-    );
-  }, [language]);
+  const labels = gu
+    ? [
+        'ગ્રાહકનું નામ બોલો',
+        'રકમ બોલો',
+        'બાકી કે આવી ગયા બોલો'
+      ]
+    : [
+        'Speak customer name',
+        'Speak amount',
+        'Say Due or Received'
+      ];
 
-  const parseVoiceText = async (text) => {
-    const cleanText = text.trim();
+  async function processSpeech(value) {
+    const text = String(value || '').trim();
 
-    if (cleanText.length < 2) {
-      setError(
-        gu
-          ? 'ઓછામાં ઓછા 2 અક્ષર લખો અથવા બોલો.'
-          : 'Enter or speak at least 2 characters.'
-      );
+    if (!text) {
+      setError(gu ? 'કંઈક બોલો અથવા લખો.' : 'Please speak or type.');
       return;
     }
 
-    const requestId = ++requestIdRef.current;
-
-    setParsing(true);
     setError('');
-    setMessage('');
-    setWarnings([]);
-    setCustomerMatches([]);
+    setSuccess('');
 
-    try {
-      const response = await api.post('/api/v1/voice/parse', {
-        text: cleanText,
-        language: speechLanguage,
-      });
+    if (step === 1) {
+      const currentRequest = ++requestNumber.current;
+      setLoading(true);
 
-      if (requestId !== requestIdRef.current) {
+      try {
+        const response = await api.post(
+          '/api/v1/voice/customer-match',
+          { name: text }
+        );
+
+        if (currentRequest !== requestNumber.current) return;
+
+        const result = response.data;
+
+        setForm(previous => ({
+          ...previous,
+          customer_name: text,
+          customer_id: result.customer?.id || null,
+          status: result.status,
+          candidates: result.matches || [],
+          amount: '',
+          type: ''
+        }));
+
+        if (result.status === 'existing' ||
+            result.status === 'new') {
+          setStep(2);
+          setSpokenText('');
+        }
+      } catch (err) {
+        setError(apiError(err));
+      } finally {
+        if (currentRequest === requestNumber.current) {
+          setLoading(false);
+        }
+      }
+
+      return;
+    }
+
+    if (step === 2) {
+      const amount = amountFromSpeech(text);
+
+      if (!amount) {
+        setError(gu
+          ? 'રકમ ઓળખાઈ નથી. ફરી બોલો અથવા 5000 લખો.'
+          : 'Amount not recognized. Try again.');
         return;
       }
 
-      const result = response.data?.data;
-
-      if (!result) {
-        throw new Error('Invalid voice parsing response.');
-      }
-
-      const matches = result.customer_matches || [];
-
-      setCustomerMatches(matches);
-
-      setForm((previous) => ({
-        ...previous,
-        customer_id: result.customer
-          ? String(result.customer.id)
-          : '',
-        type: result.type || '',
-        amount: result.amount || '',
-      }));
-
-      setRequestKey(newKey());
-      setWarnings(result.warnings || []);
-
-      if (matches.length === 1 && result.customer) {
-        const customer = result.customer;
-
-        setCustomers((previous) => {
-          if (previous.some((item) => item.id === customer.id)) {
-            return previous;
-          }
-
-          return [customer, ...previous];
-        });
-      }
-    } catch (err) {
-      if (requestId === requestIdRef.current) {
-        setError(getError(err));
-      }
-    } finally {
-      if (requestId === requestIdRef.current) {
-        setParsing(false);
-      }
-    }
-  };
-
-  const startListening = () => {
-    const SpeechRecognition =
-      window.SpeechRecognition ||
-      window.webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      setError(
-        gu
-          ? 'આ browser માં speech recognition ઉપલબ્ધ નથી.'
-          : 'Speech recognition is not supported in this browser.'
-      );
+      setForm(previous => ({ ...previous, amount }));
+      setStep(3);
+      setSpokenText('');
       return;
     }
 
-    if (listening || parsing) return;
+    if (step === 3) {
+      const type = typeFromSpeech(text);
 
-    setError('');
-    setMessage('');
+      if (!type) {
+        setError(gu
+          ? 'બાકી અથવા આવી ગયા સ્પષ્ટ બોલો.'
+          : 'Say Due or Received clearly.');
+        return;
+      }
+
+      setForm(previous => ({ ...previous, type }));
+      setStep(4);
+      setSpokenText('');
+    }
+  }
+
+  function startMicrophone() {
+    if (!SpeechRecognition || listening || loading || saving) return;
 
     const recognition = new SpeechRecognition();
+    microphone.current = recognition;
 
-    recognitionRef.current = recognition;
-    recognition.lang = speechLanguage;
+    recognition.lang = voiceLanguage;
     recognition.continuous = false;
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
 
-    recognition.onstart = () => {
-      setListening(true);
+    recognition.onstart = () => setListening(true);
+
+    recognition.onresult = event => {
+      const text = event.results[0][0].transcript.trim();
+      setSpokenText(text);
+      void processSpeech(text);
     };
 
-    recognition.onresult = (event) => {
-      const spokenText =
-        event.results[0][0].transcript.trim();
-
-      setTranscript(spokenText);
-      parseVoiceText(spokenText);
-    };
-
-    recognition.onerror = (event) => {
+    recognition.onerror = event => {
       if (event.error !== 'aborted') {
-        setError(
-          gu
-            ? `વોઇસ ઓળખવામાં સમસ્યા: ${event.error}`
-            : `Speech recognition error: ${event.error}`
-        );
+        setError('Microphone error: ' + event.error);
       }
     };
 
     recognition.onend = () => {
       setListening(false);
-      recognitionRef.current = null;
+      microphone.current = null;
     };
 
     try {
       recognition.start();
     } catch (err) {
+      setError(apiError(err));
       setListening(false);
-      setError(getError(err));
     }
-  };
+  }
 
-  const stopListening = () => {
-    recognitionRef.current?.stop();
-  };
+  function resetForm() {
+    microphone.current?.abort();
+    requestNumber.current += 1;
 
-  const resetForm = () => {
-    recognitionRef.current?.abort();
-    requestIdRef.current += 1;
-
+    setStep(1);
+    setForm({ ...blank });
+    setSpokenText('');
     setListening(false);
-    setParsing(false);
-    setTranscript('');
-    setForm({ ...emptyForm });
-    setCustomerMatches([]);
-    setCustomerSearch('');
-    setWarnings([]);
+    setLoading(false);
+    setConfirm(false);
     setError('');
-    setMessage('');
-    setConfirmOpen(false);
-    setRequestKey(newKey());
-  };
+    setRequestKey(crypto.randomUUID());
+  }
 
-  const validateForm = () => {
-    if (!form.customer_id) {
-      setError(
-        gu ? 'ગ્રાહક પસંદ કરો.' : 'Select a customer.'
-      );
-      return false;
-    }
+  function chooseCustomer(customer) {
+    setForm(previous => ({
+      ...previous,
+      customer_id: customer.id,
+      status: 'existing',
+      candidates: []
+    }));
 
-    if (!['debit', 'credit'].includes(form.type)) {
-      setError(
-        gu
-          ? 'ઉધાર અથવા જમા પસંદ કરો.'
-          : 'Select debit or credit.'
-      );
-      return false;
-    }
-
-    if (!normalizeAmount(form.amount)) {
-      setError(
-        gu
-          ? 'યોગ્ય રકમ દાખલ કરો.'
-          : 'Enter a valid amount.'
-      );
-      return false;
-    }
-
-    return true;
-  };
-
-  const openConfirmation = (event) => {
-    event.preventDefault();
-
+    setStep(2);
+    setSpokenText('');
     setError('');
-    setMessage('');
+  }
 
-    if (!validateForm()) return;
+  function chooseNewCustomer() {
+    setForm(previous => ({
+      ...previous,
+      customer_id: null,
+      status: 'new',
+      candidates: []
+    }));
 
-    setConfirmOpen(true);
-  };
+    setStep(2);
+    setSpokenText('');
+    setError('');
+  }
 
-  const saveTransaction = async () => {
-    if (saving) return;
+  async function saveEntry() {
+    if (savingRef.current || step !== 4) return;
 
-    if (!validateForm()) {
-      setConfirmOpen(false);
-      return;
-    }
-
+    savingRef.current = true;
     setSaving(true);
     setError('');
 
     try {
-      const response = await api.post(
-        '/api/v1/transactions',
-        {
-          customer_id: Number(form.customer_id),
-          type: form.type,
-          amount: normalizeAmount(form.amount),
-          description_gu:
-            form.description_gu.trim() || null,
-          description_en:
-            form.description_en.trim() || null,
-          idempotency_key: requestKey,
-        }
-      );
+      const response = await api.post('/api/v1/voice/save', {
+        customer_id: form.customer_id,
+        customer_name: form.customer_name,
+        language: voiceLanguage,
+        amount: form.amount,
+        type: form.type,
+        idempotency_key: requestKey
+      });
 
-      setConfirmOpen(false);
+      resetForm();
 
-      setMessage(
+      setSuccess(
         response.data?.replayed
-          ? (
-              gu
-                ? 'આ એન્ટ્રી પહેલેથી સેવ થઈ ગઈ છે.'
-                : 'This transaction was already saved.'
-            )
-          : (
-              gu
-                ? 'એન્ટ્રી સફળતાપૂર્વક સેવ થઈ.'
-                : 'Transaction saved successfully.'
-            )
+          ? (gu
+              ? 'આ એન્ટ્રી પહેલેથી સેવ થયેલી છે.'
+              : 'This entry was already saved.')
+          : (gu
+              ? 'એન્ટ્રી સફળતાપૂર્વક સેવ થઈ.'
+              : 'Transaction saved successfully.')
       );
-
-      setForm({ ...emptyForm });
-      setTranscript('');
-      setCustomerMatches([]);
-      setCustomerSearch('');
-      setWarnings([]);
-      setRequestKey(newKey());
     } catch (err) {
-      setConfirmOpen(false);
-      setError(getError(err));
+      setError(apiError(err));
+      setConfirm(false);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
-  };
-
-  const allCustomers = [
-    ...customerMatches,
-    ...customers.filter(
-      (customer) =>
-        !customerMatches.some(
-          (match) => match.id === customer.id
-        )
-    ),
-  ];
-
-  const selectedCustomer = allCustomers.find(
-    (customer) =>
-      String(customer.id) === String(form.customer_id)
-  );
+  }
 
   const inputClass =
     'w-full rounded-xl border border-slate-300 px-4 py-3 ' +
-    'outline-none focus:ring-2 focus:ring-blue-200';
+    'bg-white text-slate-900 outline-none ' +
+    'focus:ring-2 focus:ring-blue-200';
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -446,50 +385,53 @@ export default function VoiceEntryPage({ language = 'gu' }) {
 
         <p className="text-slate-500 mt-1">
           {gu
-            ? 'બોલીને અથવા લખીને ઉધાર / જમા એન્ટ્રી બનાવો.'
-            : 'Create debit or credit entries using speech or text.'}
+            ? 'ત્રણ વાર બોલીને ગ્રાહકની એન્ટ્રી બનાવો.'
+            : 'Create a transaction in three voice steps.'}
         </p>
       </div>
 
-      {message && (
-        <div
-          role="status"
-          className="flex items-center gap-2 rounded-xl border border-green-200 bg-green-50 p-4 text-green-700"
-        >
+      {success && (
+        <div role="status"
+          className="flex gap-2 rounded-xl bg-green-50 p-4 text-green-700">
           <CheckCircle2 size={20} />
-          {message}
+          {success}
         </div>
       )}
 
       {error && (
-        <div
-          role="alert"
-          className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-red-700"
-        >
+        <div role="alert"
+          className="flex gap-2 rounded-xl bg-red-50 p-4 text-red-700">
           <AlertCircle size={20} />
           {error}
         </div>
       )}
 
-      <section className="bg-white rounded-2xl border border-slate-200 p-6 space-y-5">
-        <div className="flex items-center gap-2">
-          <Volume2 size={21} className="text-blue-600" />
-          <h2 className="text-lg font-semibold">
-            {gu ? 'વોઇસ ઓળખાણ' : 'Speech Recognition'}
-          </h2>
+      <section className="rounded-2xl border bg-white p-6 space-y-5">
+        <div className="grid grid-cols-3 gap-2">
+          {labels.map((label, index) => (
+            <div key={index}
+              className={
+                'rounded-xl border p-3 text-center text-sm ' +
+                (step === index + 1
+                  ? 'border-blue-500 bg-blue-50 text-blue-700'
+                  : step > index + 1
+                    ? 'border-green-300 bg-green-50 text-green-700'
+                    : 'border-slate-200 bg-slate-50 text-slate-500')
+              }>
+              <div className="font-bold text-lg">{index + 1}</div>
+              {label}
+            </div>
+          ))}
         </div>
 
         <div>
           <label className="block font-medium mb-2">
-            {gu ? 'ભાષા પસંદ કરો' : 'Select Language'}
+            {gu ? 'વોઇસ ભાષા' : 'Voice Language'}
           </label>
-
           <select
-            value={speechLanguage}
-            disabled={listening}
-            onChange={(event) =>
-              setSpeechLanguage(event.target.value)
-            }
+            value={voiceLanguage}
+            disabled={listening || loading || saving}
+            onChange={event => setVoiceLanguage(event.target.value)}
             className={inputClass}
           >
             <option value="gu-IN">ગુજરાતી</option>
@@ -497,304 +439,239 @@ export default function VoiceEntryPage({ language = 'gu' }) {
           </select>
         </div>
 
-        <div className="text-center py-4">
-          <button
-            type="button"
-            disabled={!supported || parsing}
-            onClick={
-              listening ? stopListening : startListening
-            }
-            className={
-              'w-24 h-24 mx-auto rounded-full flex items-center justify-center text-white shadow-lg ' +
-              (listening
-                ? 'bg-red-600 animate-pulse'
-                : 'bg-blue-600 hover:bg-blue-700') +
-              ' disabled:opacity-40'
-            }
-          >
-            {listening ? (
-              <MicOff size={36} />
-            ) : (
-              <Mic size={36} />
-            )}
-          </button>
+        {step <= 3 && (
+          <div className="text-center py-5">
+            <h2 className="text-lg font-semibold mb-4">
+              {labels[step - 1]}
+            </h2>
 
-          <p className="mt-4 font-medium">
-            {listening
-              ? (gu ? 'સાંભળી રહ્યું છે...' : 'Listening...')
-              : parsing
-                ? (gu ? 'માહિતી શોધી રહ્યા છીએ...' : 'Parsing...')
-                : (gu ? 'બોલવા માટે માઇક દબાવો' : 'Tap to speak')}
-          </p>
-        </div>
+            <button
+              type="button"
+              onClick={
+                listening
+                  ? () => microphone.current?.stop()
+                  : startMicrophone
+              }
+              disabled={!SpeechRecognition || loading || saving}
+              className={
+                'w-24 h-24 rounded-full text-white ' +
+                'inline-flex items-center justify-center shadow-lg ' +
+                (listening
+                  ? 'bg-red-600 animate-pulse'
+                  : 'bg-blue-600 hover:bg-blue-700') +
+                ' disabled:opacity-40'
+              }
+            >
+              {listening
+                ? <MicOff size={36} />
+                : <Mic size={36} />}
+            </button>
 
-        <div>
-          <label className="block font-medium mb-2">
-            {gu ? 'બોલેલું લખાણ' : 'Spoken Text'}
-          </label>
-
-          <textarea
-            rows={3}
-            value={transcript}
-            onChange={(event) => {
-              setTranscript(event.target.value);
-              requestIdRef.current += 1;
-              setCustomerMatches([]);
-              setWarnings([]);
-            }}
-            className={inputClass}
-            placeholder={
-              gu
-                ? 'રમેશભાઈને 500 રૂપિયા ઉધાર આપ્યા'
-                : 'Ramesh paid 300 rupees'
-            }
-          />
-        </div>
-
-        <button
-          type="button"
-          disabled={parsing || listening}
-          onClick={() => parseVoiceText(transcript)}
-          className="w-full bg-slate-900 text-white rounded-xl py-3 font-semibold disabled:opacity-50 flex items-center justify-center gap-2"
-        >
-          {parsing && (
-            <Loader2 size={18} className="animate-spin" />
-          )}
-
-          {gu ? 'લખાણમાંથી માહિતી શોધો' : 'Parse Voice Text'}
-        </button>
-
-        {warnings.length > 0 && (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-2">
-            <p className="font-semibold text-amber-800">
-              {gu ? 'ચકાસવાની બાબતો' : 'Please Review'}
+            <p className="mt-4 text-slate-600">
+              {loading
+                ? (gu ? 'શોધી રહ્યા છીએ...' : 'Searching...')
+                : listening
+                  ? (gu ? 'સાંભળી રહ્યું છે...' : 'Listening...')
+                  : (gu ? 'માઇક દબાવીને બોલો' : 'Tap to speak')}
             </p>
 
-            {warnings.map((warning, index) => (
-              <p
-                key={index}
-                className="text-sm text-amber-700"
-              >
-                • {warning}
+            {!SpeechRecognition && (
+              <p className="text-red-600 mt-2 text-sm">
+                Speech recognition is not available in this browser.
               </p>
-            ))}
+            )}
           </div>
         )}
-      </section>
 
-      <form
-        onSubmit={openConfirmation}
-        className="bg-white rounded-2xl border border-slate-200 p-6 space-y-5"
-      >
-        <h2 className="text-lg font-bold">
-          {gu ? 'એન્ટ્રીની વિગતો' : 'Transaction Details'}
-        </h2>
+        {step === 1 && form.candidates.length > 0 && (
+          <div className="rounded-xl bg-amber-50 p-4 space-y-3">
+            <h3 className="font-semibold">
+              {gu
+                ? 'મળતા આવતા ગ્રાહકોમાંથી પસંદ કરો'
+                : 'Select a matching customer'}
+            </h3>
 
-        <div>
-          <label className="block font-medium mb-2">
-            {gu ? 'ગ્રાહક શોધો' : 'Search Customer'}
-          </label>
+            {form.candidates.map(customer => (
+              <button
+                key={customer.id}
+                type="button"
+                onClick={() => chooseCustomer(customer)}
+                className="block w-full rounded-xl border bg-white p-3 text-left"
+              >
+                {displayName(customer, gu)}
+                {customer.phone ? ' - ' + customer.phone : ''}
+              </button>
+            ))}
 
-          <div className="flex items-center gap-2 rounded-xl border px-3">
-            <Search size={18} className="text-slate-400" />
+            <button
+              type="button"
+              onClick={chooseNewCustomer}
+              className="w-full rounded-xl border border-blue-300 bg-blue-50 p-3 font-medium text-blue-700"
+            >
+              {gu
+                ? 'આમાંથી કોઈ નથી — નવો ગ્રાહક'
+                : 'None of these — New Customer'}
+            </button>
+          </div>
+        )}
+
+        {step <= 3 && (
+          <div className="space-y-3">
+            <label className="block font-medium">
+              {gu ? 'બોલેલું લખાણ' : 'Recognized Text'}
+            </label>
 
             <input
-              type="search"
-              value={customerSearch}
-              onChange={(event) =>
-                setCustomerSearch(event.target.value)
-              }
+              type="text"
+              value={spokenText}
+              onChange={event => setSpokenText(event.target.value)}
               placeholder={
-                gu ? 'નામ અથવા મોબાઇલ' : 'Name or phone'
+                step === 1
+                  ? (gu ? 'રમેશભાઈ પટેલ' : 'Ramesh Patel')
+                  : step === 2
+                    ? (gu ? 'પાંચ હજાર / 5000' : 'Five thousand / 5000')
+                    : (gu ? 'બાકી / આવી ગયા' : 'Due / Received')
               }
-              className="w-full py-3 outline-none"
+              className={inputClass}
             />
+
+            <button
+              type="button"
+              disabled={loading || listening || saving}
+              onClick={() => processSpeech(spokenText)}
+              className="w-full rounded-xl bg-slate-900 py-3 font-semibold text-white disabled:opacity-50"
+            >
+              {loading
+                ? <Loader2 className="animate-spin mx-auto" size={20} />
+                : (gu ? 'આગળ વધો' : 'Continue')}
+            </button>
           </div>
-        </div>
+        )}
 
-        <div>
-          <label className="block font-medium mb-2">
-            {gu ? 'ગ્રાહક પસંદ કરો' : 'Select Customer'}
-          </label>
+        <div className="rounded-xl bg-slate-50 p-4 space-y-3">
+          <h3 className="font-semibold">
+            {gu ? 'એન્ટ્રીની વિગતો' : 'Transaction Preview'}
+          </h3>
 
-          <select
-            required
-            value={form.customer_id}
-            onChange={(event) =>
-              updateField('customer_id', event.target.value)
-            }
-            className={inputClass}
-          >
-            <option value="">
-              {customerLoading
-                ? (gu ? 'શોધી રહ્યા છીએ...' : 'Searching...')
-                : (gu ? 'ગ્રાહક પસંદ કરો' : 'Select Customer')}
-            </option>
+          <div className="flex justify-between gap-3">
+            <span>{gu ? 'ગ્રાહક' : 'Customer'}</span>
+            <span className="font-semibold text-right">
+              {form.customer_name || '-'}
+              {form.status === 'new' && (
+                <span className="block text-xs text-blue-600">
+                  {gu ? 'નવો ગ્રાહક' : 'New Customer'}
+                </span>
+              )}
+              {form.status === 'existing' && (
+                <span className="block text-xs text-green-600">
+                  {gu ? 'હાલનો ગ્રાહક' : 'Existing Customer'}
+                </span>
+              )}
+            </span>
+          </div>
 
-            {allCustomers
-              .filter(
-                (customer) =>
-                  customer.is_active !== false
-              )
-              .map((customer) => (
-                <option
-                  key={customer.id}
-                  value={customer.id}
-                >
-                  {customerLabel(customer, gu)}
-                </option>
-              ))}
-          </select>
+          <div className="flex justify-between">
+            <span>{gu ? 'રકમ' : 'Amount'}</span>
+            <strong>{form.amount ? '₹' + form.amount : '-'}</strong>
+          </div>
 
-          {customerMatches.length > 1 && (
-            <p className="text-sm text-amber-700 mt-2">
-              {gu
-                ? 'એકથી વધુ ગ્રાહકો મળ્યા છે. સાચો ગ્રાહક પસંદ કરો.'
-                : 'Multiple customers matched. Select the correct customer.'}
-            </p>
-          )}
-        </div>
-
-        <div>
-          <label className="block font-medium mb-2">
-            {gu ? 'એન્ટ્રી પ્રકાર' : 'Transaction Type'}
-          </label>
-
-          <select
-            required
-            value={form.type}
-            onChange={(event) =>
-              updateField('type', event.target.value)
-            }
-            className={inputClass}
-          >
-            <option value="">
-              {gu ? 'પ્રકાર પસંદ કરો' : 'Select Type'}
-            </option>
-
-            <option value="debit">
-              {gu ? 'ઉધાર (Debit)' : 'Debit'}
-            </option>
-
-            <option value="credit">
-              {gu ? 'જમા (Credit)' : 'Credit'}
-            </option>
-          </select>
-        </div>
-
-        <div>
-          <label className="block font-medium mb-2">
-            {gu ? 'રકમ (₹)' : 'Amount (₹)'}
-          </label>
-
-          <input
-            required
-            inputMode="decimal"
-            value={form.amount}
-            onChange={(event) =>
-              updateField('amount', event.target.value)
-            }
-            placeholder="500.00"
-            className={inputClass}
-          />
-        </div>
-
-        <div>
-          <label className="block font-medium mb-2">
-            {gu ? 'ગુજરાતી નોંધ' : 'Gujarati Note'}
-          </label>
-
-          <input
-            maxLength={255}
-            value={form.description_gu}
-            onChange={(event) =>
-              updateField(
-                'description_gu',
-                event.target.value
-              )
-            }
-            className={inputClass}
-          />
-        </div>
-
-        <div>
-          <label className="block font-medium mb-2">
-            {gu ? 'English નોંધ' : 'English Note'}
-          </label>
-
-          <input
-            maxLength={255}
-            value={form.description_en}
-            onChange={(event) =>
-              updateField(
-                'description_en',
-                event.target.value
-              )
-            }
-            className={inputClass}
-          />
+          <div className="flex justify-between">
+            <span>{gu ? 'પ્રકાર' : 'Type'}</span>
+            <strong>
+              {form.type === 'debit'
+                ? (gu ? 'બાકી / ઉધાર' : 'Due / Debit')
+                : form.type === 'credit'
+                  ? (gu ? 'આવી ગયા / જમા' : 'Received / Credit')
+                  : '-'}
+            </strong>
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-3">
+          {step > 1 && (
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => {
+                setStep(previous => previous - 1);
+                setSpokenText('');
+                setError('');
+              }}
+              className="rounded-xl border px-5 py-3"
+            >
+              {gu ? 'પાછળ' : 'Back'}
+            </button>
+          )}
+
           <button
             type="button"
-            onClick={resetForm}
-            className="flex items-center gap-2 rounded-xl border border-slate-300 px-5 py-3"
+            disabled={saving}
+            onClick={() => {
+              resetForm();
+              setSuccess('');
+            }}
+            className="flex items-center gap-2 rounded-xl border px-5 py-3"
           >
             <RotateCcw size={18} />
             {gu ? 'રીસેટ' : 'Reset'}
           </button>
 
-          <button
-            type="submit"
-            disabled={parsing || saving}
-            className="flex-1 flex items-center justify-center gap-2 bg-blue-600 text-white rounded-xl px-5 py-3 font-semibold disabled:opacity-50"
-          >
-            <Save size={18} />
-            {gu ? 'ચકાસીને સેવ કરો' : 'Review & Save'}
-          </button>
+          {step === 4 && (
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => setConfirm(true)}
+              className="flex-1 flex justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white"
+            >
+              <Save size={18} />
+              {gu ? 'ચકાસીને સેવ કરો' : 'Review & Save'}
+            </button>
+          )}
         </div>
-      </form>
+      </section>
 
-      {confirmOpen && (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+      {confirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div
             role="dialog"
             aria-modal="true"
-            aria-label={
-              gu ? 'એન્ટ્રીની ખાતરી' : 'Confirm Transaction'
-            }
-            className="w-full max-w-md bg-white rounded-2xl p-6 space-y-5"
+            className="w-full max-w-md rounded-2xl bg-white p-6 space-y-4"
           >
             <h2 className="text-xl font-bold">
               {gu ? 'એન્ટ્રીની ખાતરી કરો' : 'Confirm Transaction'}
             </h2>
 
-            <div className="space-y-3">
-              <p>
-                <strong>{gu ? 'ગ્રાહક:' : 'Customer:'}</strong>{' '}
-                {customerLabel(selectedCustomer, gu)}
-              </p>
+            <p>
+              <strong>{gu ? 'ગ્રાહક:' : 'Customer:'}</strong>{' '}
+              {form.customer_name}
+            </p>
 
-              <p>
-                <strong>{gu ? 'પ્રકાર:' : 'Type:'}</strong>{' '}
-                {form.type === 'debit'
-                  ? (gu ? 'ઉધાર' : 'Debit')
-                  : (gu ? 'જમા' : 'Credit')}
-              </p>
+            <p>
+              <strong>{gu ? 'રકમ:' : 'Amount:'}</strong>{' '}
+              ₹{form.amount}
+            </p>
 
-              <p>
-                <strong>{gu ? 'રકમ:' : 'Amount:'}</strong>{' '}
-                ₹{normalizeAmount(form.amount)}
+            <p>
+              <strong>{gu ? 'પ્રકાર:' : 'Type:'}</strong>{' '}
+              {form.type === 'debit'
+                ? (gu ? 'બાકી' : 'Due')
+                : (gu ? 'આવી ગયા' : 'Received')}
+            </p>
+
+            {form.status === 'new' && (
+              <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+                {gu
+                  ? 'નવો ગ્રાહક અને તેની એન્ટ્રી સાથે સેવ થશે.'
+                  : 'A new customer and transaction will be saved.'}
               </p>
-            </div>
+            )}
 
             <div className="flex gap-3">
               <button
                 type="button"
                 disabled={saving}
-                onClick={() => setConfirmOpen(false)}
-                className="flex-1 border rounded-xl py-3"
+                onClick={() => setConfirm(false)}
+                className="flex-1 rounded-xl border py-3"
               >
                 {gu ? 'પાછા' : 'Back'}
               </button>
@@ -802,12 +679,11 @@ export default function VoiceEntryPage({ language = 'gu' }) {
               <button
                 type="button"
                 disabled={saving}
-                onClick={saveTransaction}
-                className="flex-1 bg-green-600 text-white rounded-xl py-3 font-semibold disabled:opacity-50"
+                onClick={saveEntry}
+                className="flex-1 flex justify-center gap-2 rounded-xl bg-green-600 py-3 font-semibold text-white disabled:opacity-50"
               >
-                {saving
-                  ? (gu ? 'સેવ થાય છે...' : 'Saving...')
-                  : (gu ? 'સેવ કરો' : 'Save')}
+                {saving && <Loader2 size={18} className="animate-spin" />}
+                {gu ? 'સેવ કરો' : 'Save'}
               </button>
             </div>
           </div>
