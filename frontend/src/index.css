@@ -18,3 +18,26 @@ button {
 button:disabled {
   cursor: not-allowed;
 }
+/* Mobile-first safety rules shared by all existing pages */
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { width: 100%; max-width: 100%; }
+html { overflow-x: clip; }
+body { overflow-x: clip; }
+input, select, textarea { max-width: 100%; font-size: 16px; }
+button, a, input, select { touch-action: manipulation; }
+@media (max-width: 639px) {
+  main { overflow-wrap: anywhere; }
+  main > * { min-width: 0; }
+  main h1 { font-size: 1.35rem; line-height: 1.8rem; }
+  main .p-6 { padding: 1rem; }
+  main .p-8 { padding: 1.125rem; }
+  main .text-3xl { font-size: 1.5rem; }
+  .smart-customers-table { overflow: visible; border: none; background: transparent; }
+  .smart-customers-table table, .smart-customers-table tbody, .smart-customers-table tr, .smart-customers-table td { display: block; width: 100%; min-width: 0; }
+  .smart-customers-table thead { display: none; }
+  .smart-customers-table tr { margin-bottom: .75rem; padding: .35rem 0; background: white; border: 1px solid #e2e8f0; border-radius: 1rem; overflow: hidden; }
+  .smart-customers-table td { padding: .4rem 1rem; border: none; overflow-wrap: anywhere; }
+  .smart-customers-table td:first-child { color: #64748b; font-size: .75rem; }
+  .smart-customers-table td:last-child { padding-top: .8rem; border-top: 1px solid #f1f5f9; }
+  .smart-customers-table td button { min-height: 40px; }
+}

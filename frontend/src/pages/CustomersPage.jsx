@@ -170,7 +170,7 @@ export default function CustomersPage({ language }) {
         <p role="alert" className="text-red-600">{error}</p>
       )}
 
-      <div className="bg-white border rounded-2xl overflow-x-auto">
+      <div className="smart-customers-table bg-white border rounded-2xl overflow-x-auto">
         <table className="w-full text-left min-w-[650px]">
           <thead className="bg-slate-50 text-slate-500 text-sm">
             <tr>

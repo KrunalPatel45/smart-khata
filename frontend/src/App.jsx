@@ -17,6 +17,8 @@ import {
   Menu,
   X,
   Wallet,
+  Mic,
+  ChartNoAxesColumn,
 } from 'lucide-react';
 
 import { useAuth } from './context/AuthContext';
@@ -25,6 +27,8 @@ import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import CustomersPage from './pages/CustomersPage';
 import TransactionsPage from './pages/TransactionsPage';
+import VoiceEntryPage from './pages/VoiceEntryPage';
+import ReportsPage from './pages/ReportsPage';
 
 function ProtectedRoute() {
   const { user, loading } = useAuth();
@@ -87,6 +91,16 @@ function DashboardLayout({ language, setLanguage }) {
       icon: Users,
     },
     {
+      path: '/voice',
+      label: gu ? 'વૉઇસ' : 'Voice',
+      icon: Mic,
+    },
+    {
+      path: '/reports',
+      label: gu ? 'રિપોર્ટ' : 'Reports',
+      icon: ChartNoAxesColumn,
+    },
+    {
       path: '/transactions',
       label: gu ? 'ઉધાર / જમા' : 'Transactions',
       icon: ArrowLeftRight,
@@ -137,11 +151,11 @@ function DashboardLayout({ language, setLanguage }) {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-slate-50 overflow-x-clip">
 
       <header className="sticky top-0 z-30 bg-white border-b border-slate-200">
 
-        <div className="h-16 px-4 md:px-6 flex items-center justify-between gap-4">
+        <div className="h-16 px-3 sm:px-4 md:px-6 flex items-center justify-between gap-2">
 
           <div className="flex items-center gap-3">
 
@@ -225,12 +239,31 @@ function DashboardLayout({ language, setLanguage }) {
           </div>
         )}
 
-        <main className="flex-1 min-w-0 p-4 md:p-6">
+        <main className="flex-1 min-w-0 w-full p-3 sm:p-4 md:p-6 pb-28 lg:pb-6">
           <Outlet context={{ language }} />
         </main>
 
       </div>
 
+      <nav aria-label={gu ? 'મોબાઇલ નેવિગેશન' : 'Mobile navigation'} className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white border-t border-slate-200 shadow-lg pb-[env(safe-area-inset-bottom)]">
+        <div className="grid grid-cols-5 gap-0 max-w-xl mx-auto">
+          {[
+            { path: '/dashboard', label: gu ? 'હોમ' : 'Home', icon: LayoutDashboard },
+            { path: '/customers', label: gu ? 'ગ્રાહકો' : 'Customers', icon: Users },
+            { path: '/voice', label: gu ? 'વૉઇસ' : 'Voice', icon: Mic },
+            { path: '/transactions', label: gu ? 'એન્ટ્રી' : 'Entries', icon: ArrowLeftRight },
+            { path: '/reports', label: gu ? 'રિપોર્ટ' : 'Reports', icon: ChartNoAxesColumn },
+          ].map(({ path, label, icon: Icon }) => (
+            <NavLink key={path} to={path} className={({ isActive }) =>
+              'flex min-w-0 flex-col items-center justify-center gap-1 py-3 px-0.5 text-[10px] font-semibold ' +
+              (isActive ? 'text-blue-700 bg-blue-50' : 'text-slate-500')
+            }>
+              <Icon size={21} aria-hidden="true" />
+              <span className="truncate max-w-full">{label}</span>
+            </NavLink>
+          ))}
+        </div>
+      </nav>
     </div>
   );
 }
@@ -276,6 +309,8 @@ export default function App() {
               element={<CustomersPage language={language} />}
             />
 
+            <Route path="/voice" element={<VoiceEntryPage language={language} />} />
+            <Route path="/reports" element={<ReportsPage language={language} />} />
             <Route
               path="/transactions"
               element={<TransactionsPage language={language} />}
